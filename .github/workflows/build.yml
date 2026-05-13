@@ -3,9 +3,6 @@ name: Build firmware
 on:
   push:
     branches: [main]
-    paths:
-      - 'firmware/**'
-      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 jobs:
@@ -25,14 +22,14 @@ jobs:
           pip install platformio
 
       - name: Build firmware
-        run: pio run -d firmware
+        run: pio run
 
       - name: Stage release binaries
         run: |
           mkdir -p release
-          cp firmware/.pio/build/esp32dev/firmware.bin     release/ggs-bridge-esp32-firmware.bin
-          cp firmware/.pio/build/esp32dev/bootloader.bin   release/ggs-bridge-esp32-bootloader.bin
-          cp firmware/.pio/build/esp32dev/partitions.bin   release/ggs-bridge-esp32-partitions.bin
+          cp .pio/build/esp32dev/firmware.bin     release/ggs-bridge-esp32-firmware.bin
+          cp .pio/build/esp32dev/bootloader.bin   release/ggs-bridge-esp32-bootloader.bin
+          cp .pio/build/esp32dev/partitions.bin   release/ggs-bridge-esp32-partitions.bin
           find ~/.platformio/packages -name boot_app0.bin -exec cp {} release/ggs-bridge-esp32-boot_app0.bin \;
           ls -la release/
 
