@@ -236,12 +236,11 @@ void notifyCallback(NimBLERemoteCharacteristic* c, uint8_t* data, size_t len, bo
 
 class BleClientCb : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* c) override {
-    Serial.println("[BLE] connected, requesting MTU 517");
-    c->setMTU(517);
+    Serial.println("[BLE] connected");
     bleConnected = true;
   }
-  void onDisconnect(NimBLEClient* c, int reason) override {
-    Serial.printf("[BLE] disconnected (reason=%d)\n", reason);
+  void onDisconnect(NimBLEClient* c) override {
+    Serial.println("[BLE] disconnected");
     bleConnected = false;
     notifyChar = nullptr;
   }
@@ -309,16 +308,17 @@ String scanForGgs() {
   Serial.println("[BLE] scanning for SF-GGS-* devices...");
   NimBLEScan* scan = NimBLEDevice::getScan();
   scan->setActiveScan(true);
-  NimBLEScanResults results = scan->getResults(BLE_SCAN_TIMEOUT_SEC * 1000, false);
+  // In NimBLE 1.4.x, start() runs the scan synchronously and returns results
+  NimBLEScanResults results = scan->start(BLE_SCAN_TIMEOUT_SEC, false);
 
   String found = "";
   int matches = 0;
   for (int i = 0; i < results.getCount(); i++) {
-    const NimBLEAdvertisedDevice* dev = results.getDevice(i);
-    String name = dev->getName().c_str();
+    NimBLEAdvertisedDevice dev = results.getDevice(i);  // value, not pointer
+    String name = dev.getName().c_str();
     if (name.startsWith("SF-GGS")) {
-      Serial.printf("  Found: %s @ %s\n", name.c_str(), dev->getAddress().toString().c_str());
-      found = dev->getAddress().toString().c_str();
+      Serial.printf("  Found: %s @ %s\n", name.c_str(), dev.getAddress().toString().c_str());
+      found = dev.getAddress().toString().c_str();
       matches++;
     }
   }
@@ -516,6 +516,7 @@ void setup() {
   startCaptivePortal();
 
   NimBLEDevice::init("");
+  NimBLEDevice::setMTU(517);
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
 
   // If no MAC configured, autoscan once at boot
