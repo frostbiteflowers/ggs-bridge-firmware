@@ -1,7 +1,6 @@
 /**
  * Spider Farmer GGS AC5 → Cultivar Bridge
  * Reads telemetry over BLE, pushes to Supabase via HTTPS.
- * BLE protocol credit: cr0ssn0tice
  */
 
 #include <Arduino.h>
@@ -13,7 +12,7 @@
 #include <ArduinoJson.h>
 #include <NimBLEDevice.h>
 
-#define FIRMWARE_VERSION   "1.0.1"
+#define FIRMWARE_VERSION   "1.0.2"
 #define AP_NAME_PREFIX     "GGS-Bridge-"
 #define AP_PASSWORD        "cultivar"
 #define CONFIG_PORTAL_TIMEOUT_SEC 300
@@ -88,21 +87,27 @@ String extractValueAfter(const String& json, const char* parentKey, const char* 
   return result;
 }
 
-void notifyCallback(NimBLERemoteCharacteristic* c, uint8_t* data, size_t len, bool isNotify) {
-  // Log raw bytes for debugging unknown protocols
-  Serial.printf("[BLE NOTIFY] %d bytes: ", (int)len);
-  for (size_t i = 0; i < len && i < 64; i++) {
-    Serial.printf("%02x ", data[i]);
+// Look for a top-level key (no parent) and extract its value
+String extractValueDirect(const String& json, const char* key) {
+  String needle = String("\"") + key + "\":";
+  int pos = json.indexOf(needle);
+  if (pos == -1) return "";
+  int startVal = pos + needle.length();
+  int endVal = startVal;
+  while (endVal < (int)json.length()) {
+    char c = json[endVal];
+    if (c == ',' || c == '}' || c == ']') break;
+    endVal++;
   }
-  Serial.println();
-  Serial.print("[BLE NOTIFY ascii]: ");
-  for (size_t i = 0; i < len; i++) {
-    char ch = (char)data[i];
-    Serial.print((ch >= 32 && ch <= 126) ? ch : '.');
-  }
-  Serial.println();
+  String result = json.substring(startVal, endVal);
+  result.replace("\"", "");
+  result.trim();
+  return result;
+}
 
-  // Stream printable ASCII into the buffer
+void notifyCallback(NimBLERemoteCharacteristic* c, uint8_t* data, size_t len, bool isNotify) {
+  Serial.printf("[BLE NOTIFY] %d bytes\n", (int)len);
+
   for (size_t i = 0; i < len; i++) {
     char ch = (char)data[i];
     if (ch >= 32 && ch <= 126) {
@@ -110,7 +115,6 @@ void notifyCallback(NimBLERemoteCharacteristic* c, uint8_t* data, size_t len, bo
     }
   }
 
-  // Trigger when we see closing braces (relaxed - works for any JSON-like payload)
   bool hasJsonEnd = jsonBuffer.indexOf("}}") > 0 ||
                     (jsonBuffer.length() > 80 && jsonBuffer.endsWith("}"));
 
@@ -121,22 +125,18 @@ void notifyCallback(NimBLERemoteCharacteristic* c, uint8_t* data, size_t len, bo
     lastRawPayload = jsonBuffer;
     lastRawPayloadFresh = true;
 
+    // Air sensor (nested under "sensor")
     String t = extractValueAfter(jsonBuffer, "sensor", "temp");
     String h = extractValueAfter(jsonBuffer, "sensor", "humi");
     String v = extractValueAfter(jsonBuffer, "sensor", "vpd");
 
-    String sm = extractValueAfter(jsonBuffer, "soil", "moisture");
-    if (sm.length() == 0) sm = extractValueAfter(jsonBuffer, "soil", "vwc");
-    if (sm.length() == 0) sm = extractValueAfter(jsonBuffer, "soil", "humi");
-    if (sm.length() == 0) sm = extractValueAfter(jsonBuffer, "soilSensor", "moisture");
+    // Soil sensor (AC5 uses top-level keys: tempSoil, humiSoil, ECSoil)
+    // First occurrence = "avg" entry (averaged across all soil probes)
+    String sm = extractValueDirect(jsonBuffer, "humiSoil");
+    String st = extractValueDirect(jsonBuffer, "tempSoil");
+    String se = extractValueDirect(jsonBuffer, "ECSoil");
 
-    String st = extractValueAfter(jsonBuffer, "soil", "temp");
-    if (st.length() == 0) st = extractValueAfter(jsonBuffer, "soilSensor", "temp");
-
-    String se = extractValueAfter(jsonBuffer, "soil", "ec");
-    if (se.length() == 0) se = extractValueAfter(jsonBuffer, "soil", "conductivity");
-    if (se.length() == 0) se = extractValueAfter(jsonBuffer, "soilSensor", "ec");
-
+    // Outlets (AC5 has O1-O5, we capture O1 state for now)
     String fl = extractValueAfter(jsonBuffer, "fan", "level");
     String fo = extractValueAfter(jsonBuffer, "fan", "on");
     String ll = extractValueAfter(jsonBuffer, "light", "level");
@@ -157,8 +157,7 @@ void notifyCallback(NimBLERemoteCharacteristic* c, uint8_t* data, size_t len, bo
     latest.fresh = true;
 
     Serial.printf("Air:  T=%.1f RH=%.1f VPD=%.2f\n", latest.temp, latest.humi, latest.vpd);
-    Serial.printf("Soil: VWC=%.1f T=%.1f EC=%.1f\n", latest.soilMoisture, latest.soilTemp, latest.soilEc);
-    Serial.printf("Fan:  on=%d lvl=%d  Light: on=%d lvl=%d\n", latest.fanOn, latest.fanLevel, latest.lightOn, latest.lightLevel);
+    Serial.printf("Soil: VWC=%.1f T=%.1f EC=%.2f\n", latest.soilMoisture, latest.soilTemp, latest.soilEc);
 
     jsonBuffer = "";
     blink(1, 50);
