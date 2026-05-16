@@ -1,1 +1,0 @@
-# ggs-bridge-firmware
