@@ -1,0 +1,51 @@
+name: Build firmware
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Build all three firmwares
+        run: |
+          pio run -e shed
+          pio run -e garage
+          pio run -e house
+
+      - name: Stage release binaries
+        run: |
+          mkdir -p release
+          # All three firmwares share the same bootloader / partitions / boot_app0,
+          # so we only need one set of each. Copy from the house build (arbitrary).
+          cp .pio/build/house/bootloader.bin  release/ggs-bridge-bootloader.bin
+          cp .pio/build/house/partitions.bin  release/ggs-bridge-partitions.bin
+          find ~/.platformio/packages -name boot_app0.bin -exec cp {} release/ggs-bridge-boot_app0.bin \;
+
+          # Three role-specific firmwares
+          cp .pio/build/shed/firmware.bin    release/ggs-bridge-shed-firmware.bin
+          cp .pio/build/garage/firmware.bin  release/ggs-bridge-garage-firmware.bin
+          cp .pio/build/house/firmware.bin   release/ggs-bridge-house-firmware.bin
+
+          ls -la release/
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ggs-bridge-firmware
+          path: release/
+          retention-days: 90
