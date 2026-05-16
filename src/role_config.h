@@ -45,7 +45,7 @@
 #endif
 
 // Firmware version is shared across all three — same git commit.
-#define FIRMWARE_VERSION "2.0.1"
+#define FIRMWARE_VERSION "2.0.2"
 
 // Status LED — same pin all roles
 #define STATUS_LED_PIN 2
