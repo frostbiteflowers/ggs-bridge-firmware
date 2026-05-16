@@ -47,18 +47,33 @@ void blink(int times, int periodMs = 100) {
     }
 }
 
-// Slow LED breathe used by all roles to indicate "healthy idle".
-// Non-blocking: call from loop(), uses millis() phase.
-void pulseHealthy(bool healthy) {
-    static uint32_t lastTick = 0;
-    static bool ledState = false;
+// LED status patterns. Three states, distinct visual fingerprints:
+enum LedPattern : uint8_t {
+    LED_SOLID            = 0,  // everything healthy — solid on
+    LED_PARTIAL          = 1,  // working but missing optional link — 2-blink-pause
+    LED_CRITICAL         = 2,  // critical link down — fast blink
+};
+//
+// Patterns (non-blocking, driven by millis()):
+//   SOLID:    LED always HIGH
+//   PARTIAL:  blink-blink-pause, repeating  (period ~1.6s: on-off-on-off-pause)
+//   CRITICAL: fast blink (period 200ms: on-off-on-off)
+//
+void updateStatusLed(LedPattern pattern) {
     uint32_t now = millis();
-    uint32_t period = healthy ? 2000 : 200;
-    if (now - lastTick > period / 2) {
-        lastTick = now;
-        ledState = !ledState;
-        digitalWrite(STATUS_LED_PIN, ledState ? HIGH : LOW);
+    bool on = false;
+    if (pattern == LED_SOLID) {
+        on = true;
+    } else if (pattern == LED_CRITICAL) {
+        // 5 Hz blink
+        on = (now / 100) % 2 == 0;
+    } else { // LED_PARTIAL
+        // Two short blinks then a longer pause inside a 1600ms window:
+        //  [0..150]on [150..300]off [300..450]on [450..600]off [600..1600]off
+        uint32_t phase = now % 1600;
+        on = (phase < 150) || (phase >= 300 && phase < 450);
     }
+    digitalWrite(STATUS_LED_PIN, on ? HIGH : LOW);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -494,12 +509,27 @@ void loop() {
     EspNowLink::loop();
 
     // ── LED status ──────────────────────────────────────────────────
+    // SHED:    BLE down       → CRITICAL (fast blink)
+    //          BLE up, no upstream → PARTIAL (2-blink-pause)
+    //          BLE up + upstream   → SOLID
+    // GARAGE:  no HOUSE       → CRITICAL (fast blink)
+    //          HOUSE up, no SHED  → PARTIAL (2-blink-pause)
+    //          HOUSE up + SHED up → SOLID
+    // HOUSE:   no WiFi        → CRITICAL (fast blink)
+    //          WiFi up, no GARAGE → PARTIAL (2-blink-pause)
+    //          WiFi up + GARAGE   → SOLID
     #if defined(ROLE_SHED)
-        pulseHealthy(bleConnected && EspNowLink::isUpstreamHealthy());
+        if (!bleConnected) updateStatusLed(LED_CRITICAL);
+        else if (!EspNowLink::isUpstreamHealthy()) updateStatusLed(LED_PARTIAL);
+        else updateStatusLed(LED_SOLID);
     #elif defined(ROLE_GARAGE)
-        pulseHealthy(EspNowLink::isUpstreamHealthy() && EspNowLink::isDownstreamHealthy());
+        if (!EspNowLink::isUpstreamHealthy()) updateStatusLed(LED_CRITICAL);
+        else if (!EspNowLink::isDownstreamHealthy()) updateStatusLed(LED_PARTIAL);
+        else updateStatusLed(LED_SOLID);
     #elif defined(ROLE_HOUSE)
-        pulseHealthy(WiFi.status() == WL_CONNECTED);
+        if (WiFi.status() != WL_CONNECTED) updateStatusLed(LED_CRITICAL);
+        else if (!EspNowLink::isDownstreamHealthy()) updateStatusLed(LED_PARTIAL);
+        else updateStatusLed(LED_SOLID);
     #endif
 
     // ── Role-specific work ──────────────────────────────────────────
