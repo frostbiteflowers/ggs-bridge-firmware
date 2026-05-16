@@ -110,15 +110,15 @@ void loop() {
     #endif
 
     // Channel hopping: SHED and GARAGE don't know HOUSE's channel yet.
-    // While unpaired upstream, cycle through channels 1, 6, 11 (the three
-    // main 2.4 GHz US channels) every 3 seconds to find HOUSE's broadcast.
-    // Once paired, we stop hopping and stay on HOUSE's channel.
+    // While unpaired upstream, cycle through ALL 2.4 GHz channels every 1.5
+    // seconds to find HOUSE's broadcast. (Orbi can auto-select any channel,
+    // not just 1/6/11. Once paired, we stop hopping and stay on HOUSE's channel.)
     #if !HAS_WIFI
     {
         static uint32_t lastHopMs = 0;
-        static const uint8_t HOP_CHANNELS[] = {1, 6, 11};
+        static const uint8_t HOP_CHANNELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
         static uint8_t hopIdx = 0;
-        if (!upstreamKnown && now - lastHopMs > 3000) {
+        if (!upstreamKnown && now - lastHopMs > 1500) {
             lastHopMs = now;
             hopIdx = (hopIdx + 1) % (sizeof(HOP_CHANNELS) / sizeof(HOP_CHANNELS[0]));
             uint8_t newCh = HOP_CHANNELS[hopIdx];
