@@ -28,6 +28,7 @@
 #include "espnow_link.h"
 #include "role_config.h"
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <string.h>
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
@@ -64,14 +65,16 @@ namespace EspNowLink {
 bool begin() {
     // The radio must be in station mode (off) for ESP-NOW to coexist with WiFi.
     // For HOUSE, WiFi.begin() has already been called and we adopt its channel.
-    // For SHED and GARAGE, we set STA mode without connecting.
+    // For SHED and GARAGE, we set STA mode and lock the radio to channel 1
+    // initially. We'll channel-hop in loop() until we hear HOUSE.
     #if HAS_WIFI
         // HOUSE: WiFi is already up, channel is locked by Orbi
         currentChannel = WiFi.channel();
     #else
         WiFi.mode(WIFI_STA);
         WiFi.disconnect(false, true);
-        currentChannel = 0;  // unknown until HOUSE tells us
+        currentChannel = 1;  // start on channel 1, will hop if HOUSE not found
+        esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
     #endif
 
     if (esp_now_init() != ESP_OK) {
@@ -104,6 +107,39 @@ void loop() {
     #endif
     #if ROLE_POSITION < 2
         if (!upstreamKnown)   stillSearching = true;
+    #endif
+
+    // Channel hopping: SHED and GARAGE don't know HOUSE's channel yet.
+    // While unpaired upstream, cycle through channels 1, 6, 11 (the three
+    // main 2.4 GHz US channels) every 3 seconds to find HOUSE's broadcast.
+    // Once paired, we stop hopping and stay on HOUSE's channel.
+    #if !HAS_WIFI
+    {
+        static uint32_t lastHopMs = 0;
+        static const uint8_t HOP_CHANNELS[] = {1, 6, 11};
+        static uint8_t hopIdx = 0;
+        if (!upstreamKnown && now - lastHopMs > 3000) {
+            lastHopMs = now;
+            hopIdx = (hopIdx + 1) % (sizeof(HOP_CHANNELS) / sizeof(HOP_CHANNELS[0]));
+            uint8_t newCh = HOP_CHANNELS[hopIdx];
+            if (newCh != currentChannel) {
+                Serial.printf("[ESPNOW] scanning channel %u\n", newCh);
+                currentChannel = newCh;
+                esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+                // Re-register the broadcast peer on the new channel
+                unregisterPeer(BROADCAST_MAC);
+                registerPeer(BROADCAST_MAC, currentChannel);
+                if (upstreamKnown) {
+                    unregisterPeer(upstreamMac);
+                    registerPeer(upstreamMac, currentChannel);
+                }
+                if (downstreamKnown) {
+                    unregisterPeer(downstreamMac);
+                    registerPeer(downstreamMac, currentChannel);
+                }
+            }
+        }
+    }
     #endif
 
     // Even after pairing, beacon occasionally so peers can re-find us if
@@ -175,6 +211,10 @@ void announceChannel(uint8_t channel) {
     if (channel == currentChannel) return;
     Serial.printf("[ESPNOW] channel %u → %u\n", currentChannel, channel);
     currentChannel = channel;
+    // Actually move the radio to this channel (only meaningful for non-WiFi roles).
+    #if !HAS_WIFI
+        esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+    #endif
     // Re-register broadcast on new channel
     unregisterPeer(BROADCAST_MAC);
     registerPeer(BROADCAST_MAC, currentChannel);
