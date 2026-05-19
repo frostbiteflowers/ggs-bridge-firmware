@@ -116,23 +116,20 @@ void loop() {
         if (!upstreamKnown)   stillSearching = true;
     #endif
 
-    // Channel hopping: SHED and GARAGE don't know HOUSE's channel yet.
-    // While unpaired upstream, cycle through ALL 2.4 GHz channels every 1.5
-    // seconds to find HOUSE's broadcast. (Orbi can auto-select any channel,
-    // not just 1/6/11. Once paired, we stop hopping and stay on HOUSE's channel.)
-    // IMPORTANT: For SHED (HAS_BLE), pause hopping while a phone is connected
-    // to the captive portal AP — otherwise the AP keeps moving channels and
-    // the user's connection drops every 1.5 seconds.
-    #if !HAS_WIFI
+    // Channel hopping policy:
+    //   GARAGE: hops through channels 1-11 every 1.5s to find HOUSE.
+    //   SHED:   stays put. It has an AP for the captive portal that needs
+    //           to be reachable, so we cannot keep moving channels.
+    //           GARAGE will find SHED while hopping (and SHED will adopt
+    //           GARAGE's channel via the BEACON channel field).
+    //
+    // (HOUSE never hops — its channel is dictated by Orbi via WiFi.channel())
+    #if !HAS_WIFI && !HAS_BLE  // GARAGE only
     {
         static uint32_t lastHopMs = 0;
         static const uint8_t HOP_CHANNELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
         static uint8_t hopIdx = 0;
-        bool apHasClient = false;
-        #if HAS_BLE
-            apHasClient = (WiFi.softAPgetStationNum() > 0);
-        #endif
-        if (!upstreamKnown && !apHasClient && now - lastHopMs > 1500) {
+        if (!upstreamKnown && now - lastHopMs > 1500) {
             lastHopMs = now;
             hopIdx = (hopIdx + 1) % (sizeof(HOP_CHANNELS) / sizeof(HOP_CHANNELS[0]));
             uint8_t newCh = HOP_CHANNELS[hopIdx];
@@ -140,7 +137,6 @@ void loop() {
                 Serial.printf("[ESPNOW] scanning channel %u\n", newCh);
                 currentChannel = newCh;
                 esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
-                // Re-register the broadcast peer on the new channel
                 unregisterPeer(BROADCAST_MAC);
                 registerPeer(BROADCAST_MAC, currentChannel);
                 if (upstreamKnown) {
