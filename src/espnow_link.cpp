@@ -67,11 +67,18 @@ bool begin() {
     // For HOUSE, WiFi.begin() has already been called and we adopt its channel.
     // For SHED and GARAGE, we set STA mode and lock the radio to channel 1
     // initially. We'll channel-hop in loop() until we hear HOUSE.
+    // IMPORTANT: SHED (HAS_BLE) needs AP+STA so its captive portal stays alive.
+    // GARAGE needs only STA. Setting just WIFI_STA on SHED would wipe out the
+    // softAP that startConfigPortal() just created.
     #if HAS_WIFI
         // HOUSE: WiFi is already up, channel is locked by Orbi
         currentChannel = WiFi.channel();
     #else
-        WiFi.mode(WIFI_STA);
+        #if HAS_BLE
+            WiFi.mode(WIFI_AP_STA);  // SHED: keep AP for captive portal
+        #else
+            WiFi.mode(WIFI_STA);     // GARAGE: STA only
+        #endif
         WiFi.disconnect(false, true);
         currentChannel = 1;  // start on channel 1, will hop if HOUSE not found
         esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
@@ -113,12 +120,19 @@ void loop() {
     // While unpaired upstream, cycle through ALL 2.4 GHz channels every 1.5
     // seconds to find HOUSE's broadcast. (Orbi can auto-select any channel,
     // not just 1/6/11. Once paired, we stop hopping and stay on HOUSE's channel.)
+    // IMPORTANT: For SHED (HAS_BLE), pause hopping while a phone is connected
+    // to the captive portal AP — otherwise the AP keeps moving channels and
+    // the user's connection drops every 1.5 seconds.
     #if !HAS_WIFI
     {
         static uint32_t lastHopMs = 0;
         static const uint8_t HOP_CHANNELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
         static uint8_t hopIdx = 0;
-        if (!upstreamKnown && now - lastHopMs > 1500) {
+        bool apHasClient = false;
+        #if HAS_BLE
+            apHasClient = (WiFi.softAPgetStationNum() > 0);
+        #endif
+        if (!upstreamKnown && !apHasClient && now - lastHopMs > 1500) {
             lastHopMs = now;
             hopIdx = (hopIdx + 1) % (sizeof(HOP_CHANNELS) / sizeof(HOP_CHANNELS[0]));
             uint8_t newCh = HOP_CHANNELS[hopIdx];
