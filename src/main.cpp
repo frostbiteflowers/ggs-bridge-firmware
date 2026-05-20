@@ -192,6 +192,26 @@ void notifyCallback(NimBLERemoteCharacteristic* c, uint8_t* data, size_t len, bo
     }
 }
 
+// Scan all advertising BLE devices for ~5 sec and dump them to logs.
+// Helps confirm what AC5 actually advertises as (name, MAC, RSSI).
+void scanAllBle() {
+    Serial.println("[BLE SCAN] starting 5s scan of all advertising devices...");
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    scan->setActiveScan(true);
+    NimBLEScanResults results = scan->start(5, false);
+    int n = results.getCount();
+    Serial.printf("[BLE SCAN] %d devices found:\n", n);
+    for (int i = 0; i < n; i++) {
+        NimBLEAdvertisedDevice dev = results.getDevice(i);
+        Serial.printf("[BLE SCAN]   %s  RSSI %d  \"%s\"\n",
+                      dev.getAddress().toString().c_str(),
+                      dev.getRSSI(),
+                      dev.getName().c_str());
+    }
+    scan->clearResults();
+    Serial.println("[BLE SCAN] done");
+}
+
 class BleClientCb : public NimBLEClientCallbacks {
     void onConnect(NimBLEClient* c) override {
         Serial.println("[BLE] connected"); bleConnected = true;
@@ -202,25 +222,29 @@ class BleClientCb : public NimBLEClientCallbacks {
     }
 };
 
-bool connectBle() {
-    if (bleAddress.length() == 0) return false;
-    bleAddress.toLowerCase();
-    Serial.printf("[BLE] connecting to %s\n", bleAddress.c_str());
-
+// Try connecting with a specific address type. Returns true on success.
+bool connectBleWithType(uint8_t addrType, const char* typeName) {
+    Serial.printf("[BLE] connecting to %s (type: %s)\n", bleAddress.c_str(), typeName);
     if (bleClient == nullptr) {
         bleClient = NimBLEDevice::createClient();
         bleClient->setClientCallbacks(new BleClientCb(), false);
     }
-    if (!bleClient->connect(NimBLEAddress(bleAddress.c_str(), BLE_ADDR_PUBLIC))) {
-        Serial.println("[BLE] connect failed");
+    bleClient->setConnectTimeout(8);  // 8 sec timeout instead of default 30
+    if (!bleClient->connect(NimBLEAddress(bleAddress.c_str(), addrType))) {
+        Serial.printf("[BLE] connect failed (type: %s)\n", typeName);
         return false;
     }
     delay(300);
 
     std::vector<NimBLERemoteService*>* services = bleClient->getServices(true);
-    if (!services || services->empty()) { bleClient->disconnect(); return false; }
+    if (!services || services->empty()) {
+        Serial.println("[BLE] no services found");
+        bleClient->disconnect();
+        return false;
+    }
 
     NimBLERemoteCharacteristic* foundNotifyChar = nullptr;
+    Serial.printf("[BLE] %d services discovered\n", (int)services->size());
     for (auto* svc : *services) {
         std::string svcStr = svc->getUUID().toString();
         std::vector<NimBLERemoteCharacteristic*>* chars = svc->getCharacteristics(true);
@@ -236,12 +260,32 @@ bool connectBle() {
             }
         }
     }
-    if (!foundNotifyChar) { bleClient->disconnect(); return false; }
-    if (!foundNotifyChar->subscribe(true, notifyCallback)) { bleClient->disconnect(); return false; }
+    if (!foundNotifyChar) {
+        Serial.println("[BLE] no notify char in custom services");
+        bleClient->disconnect();
+        return false;
+    }
+    if (!foundNotifyChar->subscribe(true, notifyCallback)) {
+        Serial.println("[BLE] subscribe failed");
+        bleClient->disconnect();
+        return false;
+    }
     notifyChar = foundNotifyChar;
-    Serial.println("[BLE] subscribed");
+    Serial.printf("[BLE] subscribed (type: %s)\n", typeName);
     blink(3, 100);
     return true;
+}
+
+bool connectBle() {
+    if (bleAddress.length() == 0) return false;
+    bleAddress.toLowerCase();
+
+    // Try PUBLIC first (most common for off-the-shelf BLE devices)
+    if (connectBleWithType(BLE_ADDR_PUBLIC, "PUBLIC")) return true;
+    delay(500);
+    // Then try RANDOM (some devices use this)
+    if (connectBleWithType(BLE_ADDR_RANDOM, "RANDOM")) return true;
+    return false;
 }
 
 // Build the upstream telemetry payload (compact JSON, will be wrapped on HOUSE).
@@ -491,6 +535,11 @@ void setup() {
         NimBLEDevice::init("");
         NimBLEDevice::setMTU(517);
         NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+
+        // Initial diagnostic scan: dump every BLE device in range so we
+        // can see exactly what AC5 (and the other devices like Govee,
+        // AC Infinity, Vivosun) actually advertise as.
+        scanAllBle();
     #endif
 
     #if IS_RELAY  // ── GARAGE ──────────────────────────────────────────
@@ -540,6 +589,16 @@ void loop() {
         if (!bleConnected && millis() - lastBleAttemptMs > BLE_RECONNECT_MS) {
             lastBleAttemptMs = millis();
             connectBle();
+        }
+        // Periodic re-scan: every 5 minutes if BLE not connected, do a
+        // fresh scan to see what's actually advertising. Helps diagnose
+        // if AC5 changed MAC, went to sleep, or the network shifted.
+        {
+            static unsigned long lastScanMs = 0;
+            if (!bleConnected && millis() - lastScanMs > 300000UL) {
+                lastScanMs = millis();
+                scanAllBle();
+            }
         }
         if (latest.fresh && millis() - lastTelemetrySendMs > 5000) {
             uint8_t buf[ESPNOW_MAX_PAYLOAD];
